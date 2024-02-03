@@ -156,7 +156,7 @@ def test(*, parent_callback, pytest_args, tests, markexpr, parallel_threads, **k
     By default, spin will run `-m 'not slow'`. To run the full test suite, use
     `spin test -m full`
 
-    When pytest-run-parallel is avaliable, use `spin test -p auto` or
+    When pytest-run-parallel is available, use `spin test -p auto` or
     `spin test -p <num_of_threads>` to run tests sequentional in parallel threads.
     """
     if (not pytest_args) and (not tests):
