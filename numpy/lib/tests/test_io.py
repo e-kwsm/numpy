@@ -1269,20 +1269,16 @@ class TestLoadTxt(LoadTxtBase):
         if callable(data):
             data = data()
 
-        with pytest.warns(UserWarning,
-                    match=f"Input line 3.*max_rows={3 - skip}"):
-            res = np.loadtxt(data, dtype=int, skiprows=skip, delimiter=",",
-                             max_rows=3 - skip)
-            assert_array_equal(res, [[-1, 0], [1, 2], [3, 4]][skip:])
+        res = np.loadtxt(data, dtype=int, skiprows=skip, delimiter=",",
+                         max_rows=3 - skip)
+        assert_array_equal(res, [[-1, 0], [1, 2], [3, 4]][skip:])
 
         if isinstance(data, StringIO):
             data.seek(0)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", UserWarning)
-            with pytest.raises(UserWarning):
-                np.loadtxt(data, dtype=int, skiprows=skip, delimiter=",",
-                           max_rows=3 - skip)
+        # gh-31113 old test checked the warning twice on `StringIO` inputs
+        x = np.loadtxt(data, dtype=int, skiprows=skip, delimiter=",",
+                       max_rows=3 - skip)
+        assert_array_equal(x, [[-1, 0], [1, 2], [3, 4]][skip:])
 
 class Testfromregex:
     def test_record(self):
@@ -2688,6 +2684,7 @@ def test_npzfile_dict():
 
 @pytest.mark.skipif(not HAS_REFCOUNT, reason="Python lacks refcounts")
 @pytest.mark.thread_unsafe(reason="garbage collector is global state")
+@pytest.mark.slow
 def test_load_refcount():
     # Check that objects returned by np.load are directly freed based on
     # their refcount, rather than needing the gc to collect them.

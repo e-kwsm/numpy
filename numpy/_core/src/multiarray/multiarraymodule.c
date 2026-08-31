@@ -302,7 +302,7 @@ PyArray_AsCArray(PyObject **op, void *ptr, npy_intp *dims, int nd,
         break;
     case 2:
         n = PyArray_DIMS(ap)[0];
-        ptr2 = (char **)PyArray_malloc(n * sizeof(char *));
+        ptr2 = (char **)PyMem_RawMalloc(n * sizeof(char *));
         if (!ptr2) {
             Py_DECREF(ap);
             PyErr_NoMemory();
@@ -316,7 +316,7 @@ PyArray_AsCArray(PyObject **op, void *ptr, npy_intp *dims, int nd,
     case 3:
         n = PyArray_DIMS(ap)[0];
         m = PyArray_DIMS(ap)[1];
-        ptr3 = (char ***)PyArray_malloc(n*(m+1) * sizeof(char *));
+        ptr3 = (char ***)PyMem_RawMalloc(n*(m+1) * sizeof(char *));
         if (!ptr3) {
             Py_DECREF(ap);
             PyErr_NoMemory();
@@ -350,7 +350,7 @@ PyArray_Free(PyObject *op, void *ptr)
         return -1;
     }
     if (PyArray_NDIM(ap) >= 2) {
-        PyArray_free(ptr);
+        PyMem_RawFree(ptr);
     }
     Py_DECREF(ap);
     return 0;
@@ -589,14 +589,18 @@ PyArray_ConcatenateFlattenedArrays(int narrays, PyArrayObject **arrays,
 
         stride = descr->elsize;
 
-        /* Allocate the array for the result. This steals the 'dtype' reference. */
+        /*
+         * Allocate the array for the result. This steals the `descr`
+         * reference and may replace the descriptor via `finalize_descr`,
+         * so `descr` must not be used from here on.
+         */
         ret = (PyArrayObject *)PyArray_NewFromDescr_int(
                 subtype, descr,  1, &shape, &stride, NULL, 0, NULL,
                 NULL, _NPY_ARRAY_ALLOW_EMPTY_STRING);
+        descr = NULL;
         if (ret == NULL) {
             return NULL;
         }
-        assert(PyArray_DESCR(ret) == descr);
     }
 
     /*
@@ -683,7 +687,7 @@ PyArray_ConcatenateInto(PyObject *op,
         return NULL;
     }
     narrays = (int)narrays_true;
-    arrays = PyArray_malloc(narrays * sizeof(arrays[0]));
+    arrays = PyMem_RawMalloc(narrays * sizeof(arrays[0]));
     if (arrays == NULL) {
         PyErr_NoMemory();
         return NULL;
@@ -717,7 +721,7 @@ PyArray_ConcatenateInto(PyObject *op,
     for (iarrays = 0; iarrays < narrays; ++iarrays) {
         Py_DECREF(arrays[iarrays]);
     }
-    PyArray_free(arrays);
+    PyMem_RawFree(arrays);
 
     return (PyObject *)ret;
 
@@ -726,7 +730,7 @@ fail:
     for (iarrays = 0; iarrays < narrays; ++iarrays) {
         Py_DECREF(arrays[iarrays]);
     }
-    PyArray_free(arrays);
+    PyMem_RawFree(arrays);
 
     return NULL;
 }
@@ -1291,7 +1295,7 @@ _pyarray_revert(PyArrayObject *ret)
         copyswapn(op, os, NULL, 0, length, 1, NULL);
     }
     else {
-        char *tmp = PyArray_malloc(PyArray_ITEMSIZE(ret));
+        char *tmp = PyMem_RawMalloc(PyArray_ITEMSIZE(ret));
         if (tmp == NULL) {
             PyErr_NoMemory();
             return -1;
@@ -1304,7 +1308,7 @@ _pyarray_revert(PyArrayObject *ret)
             sw1 += os;
             sw2 -= os;
         }
-        PyArray_free(tmp);
+        PyMem_RawFree(tmp);
     }
 
     return 0;
@@ -1693,7 +1697,7 @@ _array_fromobject_generic(
     flags |= NPY_ARRAY_FORCECAST;
 
     ret = (PyArrayObject *)PyArray_CheckFromAny_int(
-            op, dtype, in_DType, 0, ndmax, flags, NULL);
+            op, dtype, in_DType, 0, ndmax, flags);
 
 finish:
     Py_XDECREF(dtype);
@@ -1982,10 +1986,12 @@ array_copyto(PyObject *NPY_UNUSED(ignored),
         PyArray_Descr *descr;
         PyArray_DTypeMeta *dst_DType = NPY_DTYPE(PyArray_DESCR(dst));
         bool is_npy_nan = PyFloat_Check(src_obj) && npy_isnan(PyFloat_AsDouble(src_obj));
-        if (!is_npy_nan && dst_DType->type_num == NPY_TIMEDELTA) {
-            descr = PyArray_DESCR(dst); 
+        if (!is_npy_nan && (dst_DType->type_num == NPY_TIMEDELTA ||
+                            dst_DType->type_num == NPY_DATETIME)) {
+            descr = PyArray_DESCR(dst);
             Py_INCREF(descr);
-        } else {
+        }
+        else {
             descr = npy_find_descr_for_scalar(src_obj, PyArray_DESCR(src), DType,
                                               dst_DType);
         }
@@ -2188,7 +2194,7 @@ array_scalar(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
             if (typecode->elsize == 0) {
                 typecode->elsize = 1;
             }
-            dptr = PyArray_malloc(typecode->elsize);
+            dptr = PyMem_RawMalloc(typecode->elsize);
             if (dptr == NULL) {
                 return PyErr_NoMemory();
             }
@@ -2228,7 +2234,7 @@ array_scalar(PyObject *NPY_UNUSED(ignored), PyObject *args, PyObject *kwds)
 
     /* free dptr which contains zeros */
     if (alloc) {
-        PyArray_free(dptr);
+        PyMem_RawFree(dptr);
     }
     Py_XDECREF(tmpobj);
     return ret;
@@ -3256,6 +3262,7 @@ PyArray_Where(PyObject *condition, PyObject *x, PyObject *y)
 
     NPY_cast_info x_cast_info = {.func = NULL};
     NPY_cast_info y_cast_info = {.func = NULL};
+    NPY_BEGIN_THREADS_DEF;
 
     ax = (PyArrayObject*)PyArray_FROM_O(x);
     if (ax == NULL) {
@@ -3320,8 +3327,6 @@ PyArray_Where(PyObject *condition, PyObject *x, PyObject *y)
     }
     /* `PyArray_DescrFromType` cannot fail for simple builtin types: */
     PyArray_Descr * op_dt[4] = {common_dt, PyArray_DescrFromType(NPY_BOOL), x_dt, y_dt};
-
-    NPY_BEGIN_THREADS_DEF;
 
     iter =  NpyIter_MultiNew(
             4, op_in, flags, NPY_KEEPORDER, NPY_UNSAFE_CASTING,
@@ -3448,6 +3453,7 @@ PyArray_Where(PyObject *condition, PyObject *x, PyObject *y)
     return ret;
 
 fail:
+    NPY_END_THREADS;
     Py_DECREF(arr);
     Py_XDECREF(ax);
     Py_XDECREF(ay);
@@ -3851,7 +3857,7 @@ format_longfloat(PyObject *NPY_UNUSED(dummy), PyObject *args, PyObject *kwds)
  */
 static int _is_user_defined_string_array(PyArrayObject* array)
 {
-    if (NPY_DT_is_user_defined(PyArray_DESCR(array))) {
+    if (NPY_DT_is_user_defined(NPY_DTYPE(PyArray_DESCR(array)))) {
         PyTypeObject* scalar_type = NPY_DTYPE(PyArray_DESCR(array))->scalar_type;
         if (PyType_IsSubtype(scalar_type, &PyBytes_Type) ||
             PyType_IsSubtype(scalar_type, &PyUnicode_Type)) {
@@ -4348,6 +4354,97 @@ normalize_axis_index(PyObject *NPY_UNUSED(self),
 }
 
 
+static int
+resolve_part_view_descr(
+        PyBoundArrayMethodObject *meth, PyArray_Descr *descr,
+        PyArray_Descr **part_descr, npy_intp *view_offset)
+{
+    PyArray_Descr *descrs[2] = {descr, NULL};
+    PyArray_Descr *loop_descrs[2] = {NULL, NULL};
+    int res = meth->method->resolve_descriptors(
+            meth->method, meth->dtypes, descrs, loop_descrs, view_offset);
+    if (res < 0) {
+        return -1;
+    }
+
+    Py_DECREF(loop_descrs[0]);
+    *part_descr = loop_descrs[1];
+    return 0;
+}
+
+
+/*
+ * Resolve the descriptor for a dtype's `.real` or `.imag` method and
+ * indicate whether the result is a view (1), not a view (0), or errored (-1).
+ */
+static int
+resolve_view_part_descr(
+        PyBoundArrayMethodObject *meth, PyArray_Descr *descr,
+        PyArray_Descr **part_descr)
+{
+    if (meth == NULL) {
+        return 0;
+    }
+    npy_intp view_offset = NPY_MIN_INTP;
+    if (resolve_part_view_descr(meth, descr, part_descr, &view_offset) < 0) {
+        return -1;
+    }
+    return view_offset != NPY_MIN_INTP;
+}
+
+
+/*
+ * Resolve the real counterpart dtype for dtypes that expose compatible
+ * `.real`/`.imag` views. If not available, returns the input dtype unchanged
+ * (i.e. assume already a real dtype).
+ */
+static PyObject *
+_finfo_get_realdtype(PyObject *NPY_UNUSED(self), PyObject *descr_obj)
+{
+    if (!PyArray_DescrCheck(descr_obj)) {
+        PyErr_SetString(PyExc_TypeError, "Argument must be a dtype");
+        return NULL;
+    }
+    PyArray_Descr *descr = (PyArray_Descr *)descr_obj;
+    PyArray_Descr *real_descr = NULL;
+    PyArray_Descr *imag_descr = NULL;
+    PyArray_Descr *ret = NULL;
+
+    int real_is_view = resolve_view_part_descr(
+            NPY_DT_SLOTS(NPY_DTYPE(descr))->real_meth, descr, &real_descr);
+    if (real_is_view < 0) {
+        goto finish;
+    }
+    if (!real_is_view) {
+        ret = descr;
+        goto finish;
+    }
+
+    int imag_is_view = resolve_view_part_descr(
+            NPY_DT_SLOTS(NPY_DTYPE(descr))->imag_meth, descr, &imag_descr);
+    if (imag_is_view < 0) {
+        goto finish;
+    }
+    if (!imag_is_view) {
+        ret = descr;
+        goto finish;
+    }
+
+    if (PyArray_EquivTypes(real_descr, imag_descr)) {
+        ret = real_descr;
+    }
+    else {
+        ret = descr;
+    }
+
+  finish:
+    Py_XINCREF(ret);
+    Py_XDECREF(real_descr);
+    Py_XDECREF(imag_descr);
+    return (PyObject *)ret;
+}
+
+
 static PyObject *
 _populate_finfo_constants(PyObject *NPY_UNUSED(self), PyObject *args)
 {
@@ -4414,8 +4511,9 @@ _populate_finfo_constants(PyObject *NPY_UNUSED(self), PyObject *args)
                 goto fail;
             }
             if (res == 0) {
-                buffer_data += elsize;  // Move to next element
-                continue;
+                PyErr_Format(PyExc_ValueError,
+                    "data type %R not compatible with finfo", descr);
+                goto fail;
             }
             // Return as 0-d array item to preserve numpy scalar type
             value_obj = PyArray_ToScalar(buffer_data, buffer_array);
@@ -4428,7 +4526,9 @@ _populate_finfo_constants(PyObject *NPY_UNUSED(self), PyObject *args)
                 goto fail;
             }
             if (res == 0) {
-                continue;
+                PyErr_Format(PyExc_ValueError,
+                    "data type %R not compatible with finfo", descr);
+                goto fail;
             }
             value_obj = PyLong_FromSsize_t(int_value);
         }
@@ -4519,7 +4619,129 @@ _reload_guard(PyObject *NPY_UNUSED(self), PyObject *NPY_UNUSED(args)) {
 }
 
 
+/*
+ * _wrapit(obj, method, *args, **kwds): convert `obj` to a base-class
+ * array (via the array converter), call `method` on the result, and wrap
+ * the return value following the converter's policy.  Used by dispatched
+ * functions that are implemented as an ndarray method (np.take,
+ * np.argsort, ...) when the input is not an ndarray.
+ */
+static PyObject *
+array__wrapit(PyObject *NPY_UNUSED(self),
+        PyObject *const *args, Py_ssize_t len_args, PyObject *kwnames)
+{
+    Py_ssize_t nargs = PyVectorcall_NARGS(len_args);
+    if (nargs < 2) {
+        PyErr_SetString(PyExc_TypeError,
+                "_wrapit requires at least (obj, method) arguments");
+        return NULL;
+    }
+    PyObject *res = NULL, *arrays = NULL, *method_res = NULL;
+
+    PyObject *conv = PyObject_Vectorcall(
+            (PyObject *)&PyArrayArrayConverter_Type, args, 1, NULL);
+    if (conv == NULL) {
+        return NULL;
+    }
+    /*
+     * conv.as_arrays(subok=False): as _wrapfunc already tried the method,
+     * subok=True is maybe quite reasonable here, but this follows what the
+     * previous Python implementation did.  TODO: revisit this.
+     */
+    PyObject *as_arrays_stack[2] = {conv, Py_False};
+    arrays = PyObject_VectorcallMethod(
+            npy_interned_str.as_arrays, as_arrays_stack,
+            1 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            npy_static_pydata.wrapit_kwnames_subok);
+    if (arrays == NULL) {
+        goto finish;
+    }
+    if (!PyTuple_CheckExact(arrays) || PyTuple_GET_SIZE(arrays) != 1) {
+        PyErr_SetString(PyExc_RuntimeError,
+                "as_arrays did not return a 1-tuple");
+        goto finish;
+    }
+    PyObject *bound = PyObject_GetAttr(PyTuple_GET_ITEM(arrays, 0), args[1]);
+    if (bound == NULL) {
+        goto finish;
+    }
+    method_res = PyObject_Vectorcall(bound, args + 2, nargs - 2, kwnames);
+    Py_DECREF(bound);
+    if (method_res == NULL) {
+        goto finish;
+    }
+    /* conv.wrap(method_res, to_scalar=False) */
+    PyObject *wrap_stack[3] = {conv, method_res, Py_False};
+    res = PyObject_VectorcallMethod(
+            npy_interned_str.wrap, wrap_stack,
+            2 | PY_VECTORCALL_ARGUMENTS_OFFSET,
+            npy_static_pydata.wrapit_kwnames_to_scalar);
+
+  finish:
+    Py_XDECREF(method_res);
+    Py_XDECREF(arrays);
+    Py_DECREF(conv);
+    return res;
+}
+
+
+/*
+ * _wrapfunc(obj, method, *args, **kwds): look up `method` on `obj` and
+ * call it with the remaining arguments; fall back to _wrapit (the
+ * conversion path) when the attribute is missing or the call raises
+ * TypeError (e.g. a same-named method with an incompatible signature,
+ * as seen with pandas), chaining the original TypeError when the
+ * fallback itself fails.
+ */
+static PyObject *
+array__wrapfunc(PyObject *self,
+        PyObject *const *args, Py_ssize_t len_args, PyObject *kwnames)
+{
+    Py_ssize_t nargs = PyVectorcall_NARGS(len_args);
+    if (nargs < 2) {
+        PyErr_SetString(PyExc_TypeError,
+                "_wrapfunc requires at least (obj, method) arguments");
+        return NULL;
+    }
+    PyObject *bound;
+    if (PyObject_GetOptionalAttr(args[0], args[1], &bound) < 0) {
+        return NULL;
+    }
+    if (bound == NULL) {
+        /* No such method: use the conversion path. */
+        return array__wrapit(self, args, len_args, kwnames);
+    }
+    PyObject *res = PyObject_Vectorcall(bound, args + 2, nargs - 2, kwnames);
+    Py_DECREF(bound);
+    if (res != NULL || !PyErr_ExceptionMatches(PyExc_TypeError)) {
+        return res;
+    }
+    /*
+     * A same-named method with an incompatible signature (e.g. pandas):
+     * retry via the conversion path.  The Python implementation called
+     * _wrapit from within the `except TypeError:` clause; mirror that by
+     * making the TypeError the currently handled exception while the
+     * fallback runs, so that any exception it raises implicitly chains
+     * the TypeError as `__context__` (preserving nested context chains).
+     */
+    PyObject *typeerror = PyErr_GetRaisedException();
+    PyObject *prev = PyErr_GetHandledException();
+    PyErr_SetHandledException(typeerror);
+    res = array__wrapit(self, args, len_args, kwnames);
+    PyErr_SetHandledException(prev);
+    Py_XDECREF(prev);
+    Py_DECREF(typeerror);
+    return res;
+}
+
+
 static struct PyMethodDef array_module_methods[] = {
+    {"_wrapfunc",
+        (PyCFunction)array__wrapfunc,
+        METH_FASTCALL | METH_KEYWORDS, NULL},
+    {"_wrapit",
+        (PyCFunction)array__wrapit,
+        METH_FASTCALL | METH_KEYWORDS, NULL},
     {"_get_implementing_args",
         (PyCFunction)array__get_implementing_args,
         METH_VARARGS, NULL},
@@ -4694,10 +4916,14 @@ static struct PyMethodDef array_module_methods[] = {
         METH_FASTCALL | METH_KEYWORDS, NULL},
     {"_get_castingimpl",  (PyCFunction)_get_castingimpl,
         METH_VARARGS | METH_KEYWORDS, NULL},
+    {"_is_view_safe_cast",  (PyCFunction)_is_view_safe_cast,
+        METH_FASTCALL, NULL},
     {"_load_from_filelike", (PyCFunction)_load_from_filelike,
         METH_FASTCALL | METH_KEYWORDS, NULL},
     {"_populate_finfo_constants", (PyCFunction)_populate_finfo_constants,
         METH_VARARGS, NULL},
+    {"_finfo_get_realdtype", (PyCFunction)_finfo_get_realdtype,
+        METH_O, NULL},
     /* from umath */
     {"frompyfunc",
         (PyCFunction) ufunc_frompyfunc,
@@ -4730,6 +4956,10 @@ static struct PyMethodDef array_module_methods[] = {
         "Give a warning on reload and big warning in sub-interpreters."},
     {"from_dlpack", (PyCFunction)from_dlpack,
         METH_FASTCALL | METH_KEYWORDS, NULL},
+    {"_register_dlpack_dtype", (PyCFunction)_register_dlpack_dtype,
+        METH_VARARGS, NULL},
+    {"_dlpack_registry_replace", (PyCFunction)_dlpack_registry_replace,
+        METH_VARARGS, "unsafe testing helper to swap out dlpack registry"},
     {"_unique_hash",  (PyCFunction)array__unique_hash,
         METH_FASTCALL | METH_KEYWORDS, "Collect unique values via a hash map."},
     {NULL, NULL, 0, NULL}                /* sentinel */
@@ -5026,7 +5256,6 @@ _multiarray_umath_exec(PyObject *m) {
     PyArrayIter_Type.tp_iter = PyObject_SelfIter;
     NpyIter_Type.tp_iter = PyObject_SelfIter;
     PyArrayMultiIter_Type.tp_iter = PyObject_SelfIter;
-    PyArrayMultiIter_Type.tp_free = PyArray_free;
     if (PyType_Ready(&PyArrayIter_Type) < 0) {
         return -1;
     }
@@ -5144,8 +5373,38 @@ _multiarray_umath_exec(PyObject *m) {
                             (PyObject *)&NpyBusDayCalendar_Type);
     set_flaginfo(d);
 
+    if (PyType_Ready(&PyArrayMethod_Type) < 0) {
+        return -1;
+    }
+    if (PyType_Ready(&PyBoundArrayMethod_Type) < 0) {
+        return -1;
+    }
+
+    /* Create all abstract DType classes */
+    if (initialize_abstract_dtypes() < 0) {
+        return -1;
+    }
+
     /* Finalize scalar types and expose them via namespace or typeinfo dict */
     if (set_typeinfo(d) != 0) {
+        return -1;
+    }
+
+    /*
+     * Map ``str``/``bytes``/``bool`` to the matching legacy DTypes.  Done
+     * after ``set_typeinfo`` since that is what wraps those DTypes.
+     */
+    PyArray_DTypeMeta *dt;
+    dt = typenum_to_dtypemeta(NPY_UNICODE);
+    if (_PyArray_MapPyTypeToDType(dt, &PyUnicode_Type, NPY_FALSE) < 0) {
+        return -1;
+    }
+    dt = typenum_to_dtypemeta(NPY_STRING);
+    if (_PyArray_MapPyTypeToDType(dt, &PyBytes_Type, NPY_FALSE) < 0) {
+        return -1;
+    }
+    dt = typenum_to_dtypemeta(NPY_BOOL);
+    if (_PyArray_MapPyTypeToDType(dt, &PyBool_Type, NPY_FALSE) < 0) {
         return -1;
     }
 
@@ -5162,16 +5421,6 @@ _multiarray_umath_exec(PyObject *m) {
     PyDict_SetItemString(
             d, "_array_converter",
             (PyObject *)&PyArrayArrayConverter_Type);
-
-    if (PyType_Ready(&PyArrayMethod_Type) < 0) {
-        return -1;
-    }
-    if (PyType_Ready(&PyBoundArrayMethod_Type) < 0) {
-        return -1;
-    }
-    if (initialize_and_map_pytypes_to_dtypes() < 0) {
-        return -1;
-    }
 
     if (PyArray_InitializeCasts() < 0) {
         return -1;
@@ -5227,6 +5476,16 @@ _multiarray_umath_exec(PyObject *m) {
     npy_static_pydata.ndarray_array_function = PyObject_GetAttrString(
             (PyObject *)&PyArray_Type, "__array_function__");
     if (npy_static_pydata.ndarray_array_function == NULL) {
+        return -1;
+    }
+    npy_static_pydata.ndarray_set_dtype = PyObject_GetAttrString(
+            (PyObject *)&PyArray_Type, "_set_dtype");
+    if (npy_static_pydata.ndarray_set_dtype == NULL) {
+        return -1;
+    }
+    npy_static_pydata.ndarray_dtype_descr = PyObject_GetAttrString(
+            (PyObject *)&PyArray_Type, "dtype");
+    if (npy_static_pydata.ndarray_dtype_descr == NULL) {
         return -1;
     }
 

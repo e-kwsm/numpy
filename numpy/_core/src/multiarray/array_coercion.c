@@ -16,6 +16,7 @@
 #include "convert_datatype.h"
 #include "dtypemeta.h"
 #include "stringdtype/dtype.h"
+#include "stringdtype/casts.h"
 
 #include "npy_argparse.h"
 #include "abstractdtypes.h"
@@ -529,7 +530,7 @@ PyArray_Pack(PyArray_Descr *descr, void *item, PyObject *value)
         return -1;
     }
 
-    char *data = PyObject_Malloc(tmp_descr->elsize);
+    char *data = PyMem_Malloc(tmp_descr->elsize);
     if (data == NULL) {
         PyErr_NoMemory();
         Py_DECREF(tmp_descr);
@@ -539,7 +540,7 @@ PyArray_Pack(PyArray_Descr *descr, void *item, PyObject *value)
         memset(data, 0, tmp_descr->elsize);
     }
     if (NPY_DT_CALL_setitem(tmp_descr, value, data) < 0) {
-        PyObject_Free(data);
+        PyMem_Free(data);
         Py_DECREF(tmp_descr);
         return -1;
     }
@@ -551,7 +552,7 @@ PyArray_Pack(PyArray_Descr *descr, void *item, PyObject *value)
         }
     }
 
-    PyObject_Free(data);
+    PyMem_Free(data);
     Py_DECREF(tmp_descr);
     return res;
 }
@@ -800,13 +801,14 @@ find_descriptor_from_array(
         return 0;
     }
 
+    /* Special cases that inspect values to determine the output dtype */
     if (NPY_UNLIKELY(NPY_DT_is_parametric(DType) && PyArray_ISOBJECT(arr))) {
         /*
-         * We have one special case, if (and only if) the input array is of
-         * object DType and the dtype is not fixed already but parametric.
-         * Then, we allow inspection of all elements, treating them as
-         * elements. We do this recursively, so nested 0-D arrays can work,
-         * but nested higher dimensional arrays will lead to an error.
+         * If the input array is of object DType and the dtype is
+         * not fixed already but parametric, we allow inspection of all
+         * elements, treating them as elements. We do this recursively, so
+         * nested 0-D arrays can work, but nested higher dimensional arrays
+         * will lead to an error.
          */
         assert(DType->type_num != NPY_OBJECT);  /* not parametric */
 
@@ -849,6 +851,19 @@ find_descriptor_from_array(
             PyArray_ITER_NEXT(iter);
         }
         Py_DECREF(iter);
+    }
+    else if (NPY_UNLIKELY(PyArray_TYPE(arr) == NPY_VSTRING &&
+                          PyTypeNum_ISFLEXIBLE(DType->type_num))) {
+        /*
+         * Casting a StringDType array to a fixed-width string DType with no
+         * size means finding the width of the widest entry first, so that
+         * the cast does not truncate.
+         */
+        *out_descr = stringdtype_find_fixed_width_descr(
+                arr, DType->type_num);
+        if (*out_descr == NULL) {
+            return -1;
+        }
     }
     else if (NPY_UNLIKELY(DType->type_num == NPY_DATETIME) &&
                 PyArray_ISSTRING(arr)) {
@@ -920,10 +935,7 @@ PyArray_AdaptDescriptorToArray(
         return descr;
     }
     if (dtype == NULL) {
-        res = PyArray_ExtractDTypeAndDescriptor(descr, &new_descr, &dtype);
-        if (res < 0) {
-            return NULL;
-        }
+        PyArray_ExtractDTypeAndDescriptor(descr, &new_descr, &dtype);
         if (new_descr != NULL) {
             Py_DECREF(dtype);
             return new_descr;
@@ -1034,7 +1046,7 @@ PyArray_DiscoverDTypeAndShape_Recursive(
         }
         int was_copied_by__array__ = 0;
         arr = (PyArrayObject *)_array_from_array_like(obj,
-                requested_descr, 0, NULL, copy, &was_copied_by__array__);
+                requested_descr, 0, copy, &was_copied_by__array__);
         if (arr == NULL) {
             return -1;
         }

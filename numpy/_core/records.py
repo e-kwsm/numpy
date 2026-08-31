@@ -402,11 +402,15 @@ class recarray(ndarray):
             )
         return self
 
+    _set_dtype = None  # __array_finalize__ can deal with dtype changes
+
     def __array_finalize__(self, obj):
-        if self.dtype.type is not record and self.dtype.names is not None:
+        if (self.dtype.type is not record and
+                issubclass(self.dtype.type, nt.void) and
+                self.dtype.names is not None):
             # if self.dtype is not np.record, invoke __setattr__ which will
             # convert it to a record if it is a void dtype.
-            self.dtype = self.dtype
+            ndarray._set_dtype(self, sb.dtype((record, self.dtype)))
 
     def __getattribute__(self, attr):
         # See if ndarray has this attr, and return it if so. (note that this
@@ -455,11 +459,7 @@ class recarray(ndarray):
 
         newattr = attr not in self.__dict__
         try:
-            if attr == 'dtype':
-                # gh-29244
-                ret = self._set_dtype(val)
-            else:
-                ret = object.__setattr__(self, attr, val)
+            ret = object.__setattr__(self, attr, val)
         except Exception:
             fielddict = ndarray.__getattribute__(self, 'dtype').fields or {}
             if attr not in fielddict:
@@ -814,6 +814,12 @@ def fromstring(datastring, dtype=None, shape=None, offset=0, formats=None,
     else:
         descr = format_parser(formats, names, titles, aligned, byteorder).dtype
 
+    if descr.hasobject:
+        raise ValueError(
+            f"Cannot create record array for dtype {descr}. "
+             "Arrays containing references are not supported."
+        )
+
     itemsize = descr.itemsize
 
     # NumPy 1.19.0, 2020-01-01
@@ -911,6 +917,12 @@ def fromfile(fd, dtype=None, shape=None, offset=0, formats=None,
             descr = format_parser(
                 formats, names, titles, aligned, byteorder
             ).dtype
+
+        if descr.hasobject:
+            raise ValueError(
+                f"Cannot create record array for dtype {descr}. "
+                "Arrays containing references are not supported."
+            )
 
         itemsize = descr.itemsize
 

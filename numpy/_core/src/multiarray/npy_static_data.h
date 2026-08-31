@@ -53,6 +53,23 @@ typedef struct npy_interned_str_struct {
     PyObject *imag;
     PyObject *sort;
     PyObject *argsort;
+    PyObject *as_arrays;
+    PyObject *wrap;
+    PyObject *subok;
+    PyObject *to_scalar;
+    PyObject *partition;
+    PyObject *argpartition;
+    PyObject *_set_dtype;
+    PyObject *year;
+    PyObject *month;
+    PyObject *day;
+    PyObject *hour;
+    PyObject *minute;
+    PyObject *second;
+    PyObject *microsecond;
+    PyObject *tzinfo;
+    PyObject *utcoffset;
+    PyObject *total_seconds;
 } npy_interned_str_struct;
 
 /*
@@ -91,6 +108,13 @@ typedef struct npy_static_pydata_struct {
     PyObject *ndarray_array_function;
 
     /*
+     * References to ndarray._set_dtype and ndarray.dtype descriptor,
+     * used in PyArray_View to detect subclass overrides.
+     */
+    PyObject *ndarray_set_dtype;
+    PyObject *ndarray_dtype_descr;
+
+    /*
      * References to the '1' and '0' PyLong objects
      */
     PyObject *one_obj;
@@ -125,9 +149,23 @@ typedef struct npy_static_pydata_struct {
     PyObject *format_options;
 
     /*
+     * Context variable set to True while the legacy ufunc type resolvers
+     * run for promotion, to suppress their deprecation warnings (the
+     * resolution step warns on every call).
+     */
+    PyObject *legacy_resolver_promoting;
+
+    /*
      * Used in the __array__ internals to avoid building a tuple inline
      */
     PyObject *kwnames_is_copy;
+
+    /*
+     * Used by _wrapit to call the array converter's as_arrays/wrap
+     * methods without building kwnames tuples inline
+     */
+    PyObject *wrapit_kwnames_subok;
+    PyObject *wrapit_kwnames_to_scalar;
 
     /*
      * Used in __imatmul__ to avoid building tuples inline
@@ -155,6 +193,9 @@ typedef struct npy_static_pydata_struct {
     PyObject *dl_call_kwnames;
     PyObject *dl_cpu_device_tuple;
     PyObject *dl_max_version;
+    /* dicts for implementing `register_dlpack_dtype` */
+    PyObject *dlpack_dtype_registry;
+    PyObject *dlpack_export_registry;
 } npy_static_pydata_struct;
 
 

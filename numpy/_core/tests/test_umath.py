@@ -31,7 +31,11 @@ from numpy.testing import (
     assert_raises,
     assert_raises_regex,
 )
-from numpy.testing._private.utils import _glibc_older_than
+from numpy.testing._private.utils import (
+    LONG_DOUBLE_IS_IBM_DOUBLE_DOUBLE,
+    _glibc_older_than,
+    longdouble_fpe_mark,
+)
 
 UFUNCS = [obj for obj in np._core.umath.__dict__.values()
          if isinstance(obj, np.ufunc)]
@@ -475,32 +479,30 @@ class TestDivision:
         assert_equal(x // 100, [0, 0, 0, 1, -1, -1, -1, -1, -2])
         assert_equal(x % 100, [5, 10, 90, 0, 95, 90, 10, 0, 80])
 
-    @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
-    @pytest.mark.parametrize("dtype,ex_val", itertools.product(
-        sctypes['int'] + sctypes['uint'], (
-            (
-                # dividend
-                "np.array(range(fo.max-lsize, fo.max)).astype(dtype),"
-                # divisors
-                "np.arange(lsize).astype(dtype),"
-                # scalar divisors
-                "range(15)"
-            ),
-            (
-                # dividend
-                "np.arange(fo.min, fo.min+lsize).astype(dtype),"
-                # divisors
-                "np.arange(lsize//-2, lsize//2).astype(dtype),"
-                # scalar divisors
-                "range(fo.min, fo.min + 15)"
-            ), (
-                # dividend
-                "np.array(range(fo.max-lsize, fo.max)).astype(dtype),"
-                # divisors
-                "np.arange(lsize).astype(dtype),"
-                # scalar divisors
-                "[1,3,9,13,neg, fo.min+1, fo.min//2, fo.max//3, fo.max//4]"
-            )
+    @pytest.mark.parametrize("dtype", sctypes['int'] + sctypes['uint'])
+    @pytest.mark.parametrize("ex_val", (
+        (
+            # dividend
+            "np.array(range(fo.max-lsize, fo.max)).astype(dtype),"
+            # divisors
+            "np.arange(lsize).astype(dtype),"
+            # scalar divisors
+            "range(15)"
+        ),
+        (
+            # dividend
+            "np.arange(fo.min, fo.min+lsize).astype(dtype),"
+            # divisors
+            "np.arange(lsize//-2, lsize//2).astype(dtype),"
+            # scalar divisors
+            "range(fo.min, fo.min + 15)"
+        ), (
+            # dividend
+            "np.array(range(fo.max-lsize, fo.max)).astype(dtype),"
+            # divisors
+            "np.arange(lsize).astype(dtype),"
+            # scalar divisors
+            "[1,3,9,13,neg, fo.min+1, fo.min//2, fo.max//3, fo.max//4]"
         )
     ))
     def test_division_int_boundary(self, dtype, ex_val):
@@ -561,14 +563,12 @@ class TestDivision:
 
             np.array([], dtype=dtype) // 0
 
-    @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
-    @pytest.mark.parametrize("dtype,ex_val", itertools.product(
-        sctypes['int'] + sctypes['uint'], (
-            "np.array([fo.max, 1, 2, 1, 1, 2, 3], dtype=dtype)",
-            "np.array([fo.min, 1, -2, 1, 1, 2, -3]).astype(dtype)",
-            "np.arange(fo.min, fo.min+(100*10), 10, dtype=dtype)",
-            "np.array(range(fo.max-(100*7), fo.max, 7)).astype(dtype)",
-        )
+    @pytest.mark.parametrize("dtype", sctypes['int'] + sctypes['uint'])
+    @pytest.mark.parametrize("ex_val", (
+        "np.array([fo.max, 1, 2, 1, 1, 2, 3], dtype=dtype)",
+        "np.array([fo.min, 1, -2, 1, 1, 2, -3]).astype(dtype)",
+        "np.arange(fo.min, fo.min+(100*10), 10, dtype=dtype)",
+        "np.array(range(fo.max-(100*7), fo.max, 7)).astype(dtype)",
     ))
     def test_division_int_reduce(self, dtype, ex_val):
         fo = np.iinfo(dtype)
@@ -623,8 +623,6 @@ class TestDivision:
             quotient_array = np.array([quotient] * 5)
             assert all(dividend_array // divisor == quotient_array), msg
         else:
-            if IS_WASM:
-                pytest.skip("fp errors don't work in wasm")
             with np.errstate(divide='raise', invalid='raise'):
                 with pytest.raises(FloatingPointError):
                     dividend // divisor
@@ -677,7 +675,13 @@ class TestDivision:
     @pytest.mark.skipif(hasattr(np.__config__, "blas_ssl2_info"),
             reason="gh-22982")
     @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
-    @pytest.mark.parametrize('dtype', np.typecodes['Float'])
+    @pytest.mark.parametrize(
+        'dtype',
+        [
+            pytest.param(code, marks=[longdouble_fpe_mark] if code == 'g' else [])
+            for code in np.typecodes['Float']
+        ],
+    )
     def test_floor_division_errors(self, dtype):
         fnan = np.array(np.nan, dtype=dtype)
         fone = np.array(1.0, dtype=dtype)
@@ -796,9 +800,10 @@ class TestRemainder:
                         assert_(b > rem >= 0, msg)
 
     @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
-    @pytest.mark.xfail(sys.platform.startswith("darwin"),
-            reason="MacOS seems to not give the correct 'invalid' warning for "
-                   "`fmod`.  Hopefully, others always do.")
+    @pytest.mark.xfail(
+        sys.platform in ["android", "darwin", "ios"],
+        reason="This platform seems to not give the correct 'invalid' warning"
+    )
     @pytest.mark.parametrize('dtype', np.typecodes['Float'])
     def test_float_divmod_errors(self, dtype):
         # Check valid errors raised for divmod and remainder
@@ -825,9 +830,10 @@ class TestRemainder:
     @pytest.mark.skipif(hasattr(np.__config__, "blas_ssl2_info"),
             reason="gh-22982")
     @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
-    @pytest.mark.xfail(sys.platform.startswith("darwin"),
-           reason="MacOS seems to not give the correct 'invalid' warning for "
-                  "`fmod`.  Hopefully, others always do.")
+    @pytest.mark.xfail(
+        sys.platform in ["android", "darwin", "ios"],
+        reason="This platform seems to not give the correct 'invalid' warning"
+    )
     @pytest.mark.parametrize('dtype', np.typecodes['Float'])
     @pytest.mark.parametrize('fn', [np.fmod, np.remainder])
     def test_float_remainder_errors(self, dtype, fn):
@@ -984,7 +990,6 @@ class TestDivisionIntegerOverflowsAndDivideByZero:
             helper_lambdas['min-zero'], helper_lambdas['neg_min-zero'])
     }
 
-    @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
     @pytest.mark.parametrize("dtype", np.typecodes["Integer"])
     def test_signed_division_overflow(self, dtype):
         to_check = interesting_binop_operands(np.iinfo(dtype).min, -1, dtype)
@@ -1011,7 +1016,6 @@ class TestDivisionIntegerOverflowsAndDivideByZero:
             assert extractor(res1) == np.iinfo(op1.dtype).min
             assert extractor(res2) == 0
 
-    @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
     @pytest.mark.parametrize("dtype", np.typecodes["AllInteger"])
     def test_divide_by_zero(self, dtype):
         # Note that the return value cannot be well defined here, but NumPy
@@ -1031,7 +1035,6 @@ class TestDivisionIntegerOverflowsAndDivideByZero:
             assert extractor(res1) == 0
             assert extractor(res2) == 0
 
-    @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
     @pytest.mark.parametrize("dividend_dtype", sctypes['int'])
     @pytest.mark.parametrize("divisor_dtype", sctypes['int'])
     @pytest.mark.parametrize("operation",
@@ -1601,7 +1604,6 @@ class TestSpecialFloats:
             a = np.array(1e9, dtype='float32')
             np.log(a)
 
-    @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
     @pytest.mark.parametrize('dtype', ['e', 'f', 'd', 'g'])
     def test_sincos_values(self, dtype):
         with np.errstate(all='ignore'):
@@ -1612,9 +1614,8 @@ class TestSpecialFloats:
             assert_equal(np.sin(yf), xf)
             assert_equal(np.cos(yf), xf)
 
-    @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
     @pytest.mark.xfail(
-        sys.platform.startswith("darwin"),
+        sys.platform in {"darwin", "ios"},
         reason="underflow is triggered for scalar 'sin'"
     )
     def test_sincos_underflow(self):
@@ -1688,19 +1689,24 @@ class TestSpecialFloats:
                           np.array(1E200, dtype='d'))
 
     @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
-    def test_reciprocal_values(self):
+    @pytest.mark.parametrize(
+        'dt',
+        [
+            pytest.param(code, marks=[longdouble_fpe_mark] if code == 'g' else [])
+            for code in np.typecodes['Float']
+        ],
+    )
+    def test_reciprocal_values(self, dt):
         with np.errstate(all='ignore'):
             x = [np.nan,  np.nan, 0.0, -0.0, np.inf, -np.inf]
             y = [np.nan, -np.nan, np.inf, -np.inf, 0., -0.]
-            for dt in ['e', 'f', 'd', 'g']:
-                xf = np.array(x, dtype=dt)
-                yf = np.array(y, dtype=dt)
-                assert_equal(np.reciprocal(yf), xf)
+            xf = np.array(x, dtype=dt)
+            yf = np.array(y, dtype=dt)
+            assert_equal(np.reciprocal(yf), xf)
 
         with np.errstate(divide='raise'):
-            for dt in ['e', 'f', 'd', 'g']:
-                assert_raises(FloatingPointError, np.reciprocal,
-                              np.array(-0.0, dtype=dt))
+            assert_raises(FloatingPointError, np.reciprocal,
+                            np.array(-0.0, dtype=dt))
 
     @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
     def test_tan(self):
@@ -1764,8 +1770,8 @@ class TestSpecialFloats:
                           np.array(1200.0, dtype='d'))
 
     @pytest.mark.skipif(IS_WASM, reason="fp errors don't work in wasm")
-    @pytest.mark.skipif('bsd' in sys.platform,
-            reason="fallback implementation may not raise, see gh-2487")
+    @pytest.mark.xfail(any(name in sys.platform for name in ["android", "bsd"]),
+            reason="fallback implementation may not raise, see gh-24876")
     def test_cosh(self):
         in_ = [np.nan, -np.nan, np.inf, -np.inf]
         out = [np.nan, np.nan, np.inf, np.inf]
@@ -1934,14 +1940,16 @@ class TestSpecialFloats:
         #  - ceil/float16 on MSVC:32-bit
         #  - spacing/float16 on almost all platforms
         #  - spacing/float32,float64 on Windows MSVC with VS2022
+        #  - arccos/float16,float32 on Android
         if ufunc in (np.spacing, np.ceil) and dtype == 'e':
             return
         # Skip spacing tests with NaN on Windows MSVC (all dtypes)
         import platform
-        if (ufunc == np.spacing and
-            platform.system() == 'Windows' and
+        if ((ufunc, platform.system()) in [
+                (np.spacing, 'Windows'), (np.arccos, 'Android')
+            ] and
             any(np.isnan(d) if isinstance(d, (int, float)) else False for d in data)):
-            pytest.skip("spacing with NaN generates warnings on Windows/VS2022")
+            pytest.skip(f"{ufunc} with NaN generates warnings on this platform")
         array = np.array(data, dtype=dtype)
         with assert_no_warnings():
             ufunc(array)
@@ -2963,7 +2971,7 @@ class TestBitwiseUFuncs:
             assert_(type(f.reduce(btype)) is bool, msg)
 
     @pytest.mark.parametrize("input_dtype_obj, bitsize",
-            zip(bitwise_types, bitwise_bits))
+            list(zip(bitwise_types, bitwise_bits)))
     def test_bitwise_count(self, input_dtype_obj, bitsize):
         input_dtype = input_dtype_obj.type
 
@@ -3953,6 +3961,21 @@ class TestSpecialMethods:
         with assert_raises_regex(TypeError, fnmatch.translate(msg)):
             np.add(A(), object(), out=1)
 
+    def test_ufunc_override_reduction_not_implemented_leak(self):
+        # gh-31677: the reduction override error path leaked references to
+        # the internal full_args.in/out tuples when __array_ufunc__ returned
+        # NotImplemented (or raised). No refcount assertion is made here; a
+        # leak sanitizer build is expected to catch the regression.
+
+        class A:
+            def __array_ufunc__(self, *args, **kwargs):
+                return NotImplemented
+
+        a = A()
+        assert_raises(TypeError, np.add.reduce, a)
+        assert_raises(TypeError, np.add.accumulate, a)
+        assert_raises(TypeError, np.add.reduceat, a, [0])
+
     def test_ufunc_override_disabled(self):
 
         class OptOut:
@@ -4297,13 +4320,17 @@ class TestRationalFunctions:
         assert_equal(np.lcm(a, b), 10 * big)
 
     def test_gcd_overflow(self):
-        for dtype in (np.int32, np.int64):
-            # verify that we don't overflow when taking abs(x)
-            # not relevant for lcm, where the result is unrepresentable anyway
-            a = dtype(np.iinfo(dtype).min)  # negative power of two
+        # verify that we don't overflow when taking abs(x) for INT_MIN
+        # this was undefined behavior that manifested on s390x with GCC 11.5
+        for dtype in (np.int8, np.int16, np.int32, np.int64):
+            a = dtype(np.iinfo(dtype).min)  # INT_MIN
             q = -(a // 4)
+            # Test with INT_MIN as first argument
             assert_equal(np.gcd(a,  q * 3), q)
             assert_equal(np.gcd(a, -q * 3), q)
+            # Test with INT_MIN as second argument
+            assert_equal(np.gcd(q * 3,  a), q)
+            assert_equal(np.gcd(-q * 3, a), q)
 
     def test_decimal(self):
         from decimal import Decimal
@@ -4414,7 +4441,6 @@ class TestComplexFunctions:
             assert_almost_equal(fz.real, fr, err_msg=f'real part {f}')
             assert_almost_equal(fz.imag, 0., err_msg=f'imag part {f}')
 
-    @pytest.mark.xfail(IS_WASM, reason="doesn't work")
     def test_precisions_consistent(self):
         z = 1 + 1j
         for f in self.funcs:
@@ -4424,7 +4450,6 @@ class TestComplexFunctions:
             assert_almost_equal(fcf, fcd, decimal=6, err_msg=f'fch-fcd {f}')
             assert_almost_equal(fcl, fcd, decimal=15, err_msg=f'fch-fcl {f}')
 
-    @pytest.mark.xfail(IS_WASM, reason="doesn't work")
     def test_branch_cuts(self):
         # check branch cuts and continuity on them
         _check_branch_cut(np.log,   -0.5, 1j, 1, -1, True)  # noqa: E221
@@ -4450,7 +4475,6 @@ class TestComplexFunctions:
         _check_branch_cut(np.arccosh, [0 - 2j, 2j, 2], [1,  1,  1j], 1, 1)
         _check_branch_cut(np.arctanh, [0 - 2j, 2j, 0], [1,  1,  1j], 1, 1)
 
-    @pytest.mark.xfail(IS_WASM, reason="doesn't work")
     def test_branch_cuts_complex64(self):
         # check branch cuts and continuity on them
         _check_branch_cut(np.log,   -0.5, 1j, 1, -1, True, np.complex64)  # noqa: E221
@@ -4535,14 +4559,15 @@ class TestComplexFunctions:
         _glibc_older_than("2.18"),
         reason="Older glibc versions are imprecise (maybe passes with SIMD?)"
     )
-    @pytest.mark.xfail(IS_WASM, reason="doesn't work")
     @pytest.mark.parametrize('dtype', [
         np.complex64, np.complex128, np.clongdouble
     ])
     def test_loss_of_precision(self, dtype):
         """Check loss of precision in complex arc* functions"""
-        if dtype is np.clongdouble and platform.machine() != 'x86_64':
-            # Failures on musllinux, aarch64, s390x, ppc64le (see gh-17554)
+        if dtype is np.clongdouble and (
+            platform.machine() != 'x86_64' or sys.platform == 'android'
+        ):
+            # Failures on musllinux, android, aarch64, s390x, ppc64le (see gh-17554)
             pytest.skip('Only works reliably for x86-64 and recent glibc')
 
         # Check against known-good functions
@@ -4804,7 +4829,7 @@ def test_nextafterf():
 
 @pytest.mark.skipif(np.finfo(np.double) == np.finfo(np.longdouble),
                     reason="long double is same as double")
-@pytest.mark.xfail(condition=platform.machine().startswith("ppc64"),
+@pytest.mark.xfail(condition=LONG_DOUBLE_IS_IBM_DOUBLE_DOUBLE,
                     reason="IBM double double")
 def test_nextafterl():
     return _test_nextafter(np.longdouble)
@@ -4821,6 +4846,28 @@ def test_nextafter_0():
                 assert_(
                     0. < direction * np.nextafter(t(0), t(direction)) < tiny)
         assert_equal(np.nextafter(t(0), t(direction)) / t(2.1), direction * 0.0)
+
+
+@pytest.mark.parametrize("sctype", [np.float16, np.float32, np.float64, np.longdouble])
+def test_nextafter_signed_zero(sctype):
+    """`nextafter(-0.0, +0.0)` must return the sign of the second parameter"""
+
+    def _equal_signed_zero(a, b):
+        return (a == b) and (np.signbit(a) == np.signbit(b))
+
+    pos_zero = sctype(+0.0)
+    neg_zero = sctype(-0.0)
+
+    assert _equal_signed_zero(np.nextafter(pos_zero, neg_zero), neg_zero), \
+        f"nextafter(+0.0, -0.0) != -0.0 for {sctype.__name__}"
+    assert _equal_signed_zero(np.nextafter(neg_zero, pos_zero), pos_zero), \
+        f"nextafter(-0.0, +0.0) != +0.0 for {sctype.__name__}"
+
+    assert _equal_signed_zero(np.nextafter(pos_zero, pos_zero), pos_zero), \
+        f"nextafter(+0.0, +0.0) != +0.0 for {sctype.__name__}"
+    assert _equal_signed_zero(np.nextafter(neg_zero, neg_zero), neg_zero), \
+        f"nextafter(-0.0, -0.0) != -0.0 for {sctype.__name__}"
+
 
 def _test_spacing(t):
     one = t(1)
@@ -4843,7 +4890,7 @@ def test_spacingf():
 
 @pytest.mark.skipif(np.finfo(np.double) == np.finfo(np.longdouble),
                     reason="long double is same as double")
-@pytest.mark.xfail(condition=platform.machine().startswith("ppc64"),
+@pytest.mark.xfail(condition=LONG_DOUBLE_IS_IBM_DOUBLE_DOUBLE,
                     reason="IBM double double")
 def test_spacingl():
     return _test_spacing(np.longdouble)
@@ -4889,6 +4936,26 @@ def test_nextafter_vs_spacing():
 def test_pos_nan():
     """Check np.nan is a positive nan."""
     assert_(np.signbit(np.nan) == 0)
+
+@pytest.mark.parametrize("dtype", [np.float16, np.float32, np.float64, np.longdouble])
+def test_abs_nan_signbit(dtype):
+    """#31421 abs(nan) preserves positive sign bit correctly."""
+    pos_nan = dtype(np.nan)
+    assert not np.signbit(np.abs(pos_nan)), \
+        f"abs(+nan) should have positive sign for {dtype.__name__}"
+
+    neg_nan = dtype(-np.nan)
+    assert not np.signbit(np.abs(neg_nan)), \
+        f"abs(-nan) should have positive sign for {dtype.__name__}"
+
+
+def test_abs_nan_signbit_array():
+    """#31421 abs(nan) array preserves positive sign bit correctly."""
+    arr = np.array([np.nan, -np.nan])
+    result = np.signbit(np.abs(arr))
+    assert_array_equal(result, [False, False],
+                      "abs of NaN array should have all positive signs")
+
 
 def test_reduceat():
     """Test bug in reduceat when structured arrays are not copied."""
@@ -5109,6 +5176,34 @@ def test_bad_legacy_gufunc_silent_errors(x1):
     # The signature of always_error_gufunc is '(i),()->()'.
     with pytest.raises(RuntimeError, match=r"How unexpected :\)!"):
         ncu_tests.always_error_gufunc(x1, 0.0)
+
+
+class TestReplaceLoopBySignature:
+    """Tests for PyUFunc_ReplaceLoopBySignature C API."""
+
+    @pytest.mark.thread_unsafe(reason="modifies ufunc within test")
+    def test_replace_loop(self):
+        # Call the ufunc first to populate any internal dispatch caches,
+        # then replace the float64 loop with one that outputs 42.0,
+        # verify the replacement is used, and restore the original.
+        a = np.array([1.0, 2.0, 3.0])
+        assert_array_equal(np.negative(a), [-1.0, -2.0, -3.0])
+
+        saved = ncu_tests.replace_loop(np.negative)
+        try:
+            assert_array_equal(np.negative(a), [42.0, 42.0, 42.0])
+        finally:
+            ncu_tests.restore_loop(np.negative, saved)
+
+        assert_array_equal(np.negative(a), [-1.0, -2.0, -3.0])
+
+    def test_replace_loop_before_first_call(self):
+        # gh-31068: replacing the loop of a ufunc that was never called
+        # must take effect in the cached dispatch path created later.
+        # A fresh ufunc guarantees the dispatch state is untouched.
+        fresh = ncu_tests.create_unary_ufunc()
+        ncu_tests.replace_loop(fresh)
+        assert_array_equal(fresh(np.array([1.0, 2.0])), [42.0, 42.0])
 
 
 class TestAddDocstring:

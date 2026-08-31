@@ -536,7 +536,8 @@ def count_nonzero(a, axis=None, *, keepdims=False):
 
     a = asanyarray(a)
 
-    # TODO: this works around .astype(bool) not working properly (gh-9847)
+    # This is a performance optimization for character dtypes
+    # TODO: this can be removed if the legacy fixed-width string dtypes are ever removed
     if np.issubdtype(a.dtype, np.character):
         a_bool = a != a.dtype.type()
     else:
@@ -1019,6 +1020,7 @@ def tensordot(a, b, axes=2):
           second to `b`. Both elements array_like must be of the same length.
           Each axis may appear at most once; repeated axes are not allowed.
           For example, ``axes=([1, 1], [0, 0])`` is invalid.
+
     Returns
     -------
     output : ndarray
@@ -1666,7 +1668,10 @@ def cross(a, b, axisa=-1, axisb=-1, axisc=-1, axis=None):
     b = asarray(b)
 
     if (a.ndim < 1) or (b.ndim < 1):
-        raise ValueError("At least one array has zero dimension")
+        raise ValueError(
+            "Input arrays must be at least 1-dimensional, but "
+            f"a.ndim = {a.ndim} and b.ndim = {b.ndim}"
+        )
 
     # Check axisa and axisb are within bounds
     axisa = normalize_axis_index(axisa, a.ndim, msg_prefix='axisa')
